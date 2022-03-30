@@ -16,13 +16,16 @@
 
 package com.google.template.soy.soytree.defn;
 
+import com.google.common.collect.ImmutableList;
 import com.google.template.soy.base.SourceLocation;
 import com.google.template.soy.basetree.CopyState;
 import com.google.template.soy.exprtree.AbstractVarDefn;
 import com.google.template.soy.exprtree.ExprNode;
 import com.google.template.soy.exprtree.ExprRootNode;
 import com.google.template.soy.types.SoyType;
+import com.google.template.soy.types.ast.NamedTypeNode;
 import com.google.template.soy.types.ast.TypeNode;
+import com.google.template.soy.types.ast.UnionTypeNode;
 import javax.annotation.Nullable;
 
 /**
@@ -34,25 +37,59 @@ public final class TemplateStateVar extends AbstractVarDefn implements TemplateH
   private String desc;
   private final SourceLocation sourceLocation;
   @Nullable private final TypeNode typeNode;
+  private final TypeNode originalTypeNode;
   private final ExprRootNode initialValue;
+  private final boolean isExplicitlyOptional;
 
   public TemplateStateVar(
       String name,
       @Nullable TypeNode typeNode,
+      boolean optional,
       ExprNode initialValue,
       @Nullable String desc,
       @Nullable SourceLocation nameLocation,
       SourceLocation sourceLocation) {
     super(name, nameLocation, /*type=*/ null);
-    this.typeNode = typeNode;
+    this.originalTypeNode = typeNode;
+    this.isExplicitlyOptional = optional;
     this.desc = desc;
     this.initialValue = new ExprRootNode(initialValue);
     this.sourceLocation = sourceLocation;
+
+    boolean isNullable = false;
+    if (typeNode instanceof UnionTypeNode) {
+      UnionTypeNode utn = (UnionTypeNode) typeNode;
+      for (TypeNode tn : utn.candidates()) {
+        if (tn instanceof NamedTypeNode
+            && ((NamedTypeNode) tn).name().identifier().equals("null")) {
+          isNullable = true;
+          break;
+        }
+      }
+    } else if (typeNode instanceof NamedTypeNode
+        && ((NamedTypeNode) typeNode).name().identifier().equals("null")) {
+      isNullable = true;
+    }
+    // Optional params become nullable
+    if (optional && !isNullable && typeNode != null) {
+      NamedTypeNode nullType = NamedTypeNode.create(typeNode.sourceLocation(), "null");
+      typeNode =
+          typeNode instanceof UnionTypeNode
+              ? UnionTypeNode.create(
+                  ImmutableList.<TypeNode>builder()
+                      .addAll(((UnionTypeNode) typeNode).candidates())
+                      .add(nullType)
+                      .build())
+              : UnionTypeNode.create(ImmutableList.of(typeNode, nullType));
+    }
+    this.typeNode = typeNode;
   }
 
   private TemplateStateVar(TemplateStateVar old, CopyState copyState) {
     super(old);
+    this.originalTypeNode = old.originalTypeNode == null ? null : old.originalTypeNode.copy();
     this.typeNode = old.typeNode == null ? null : old.typeNode.copy();
+    this.isExplicitlyOptional = old.isExplicitlyOptional;
     this.desc = old.desc;
     this.initialValue = old.initialValue.copy(copyState);
     this.sourceLocation = old.sourceLocation;
@@ -104,12 +141,12 @@ public final class TemplateStateVar extends AbstractVarDefn implements TemplateH
 
   @Override
   public boolean isRequired() {
-    return true;
+    return !isExplicitlyOptional;
   }
 
   @Override
   public boolean isExplicitlyOptional() {
-    return false;
+    return isExplicitlyOptional;
   }
 
   @Override
